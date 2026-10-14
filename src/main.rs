@@ -15,14 +15,18 @@ enum Player {
     Two = 2,
 }
 
+enum PlayerInput {
+    Column(char),
+    Quit,
+    Invalid,
+}
 
 fn display_board(board: &Board) {
-    // Assuming board is iterable (like a 2D array or Vec)
     for board_row in board { 
         // Display each cell in row
         let mut display_row = String::new();
         
-        for (j, cell) in board_row.iter().enumerate() {
+        for cell in board_row.iter() {
             display_row.push_str(&"|".blue().to_string());
             if cell == &0 {
                 display_row.push_str(&"o".black().to_string());
@@ -38,33 +42,37 @@ fn display_board(board: &Board) {
     }
     
     // Add letters at bottom
-    println!(
+    print!(
         "{}{} {} {} {} {} {} {}\n",
         " ".repeat((40-13)/2),
-        "A".yellow(), 
-        "B".yellow(), 
-        "C".yellow(), 
-        "D".yellow(), 
-        "E".yellow(), 
-        "F".yellow(), 
-        "G".yellow()
+        "A".yellow().bold(),
+        "B".yellow().bold(),
+        "C".yellow().bold(),
+        "D".yellow().bold(),
+        "E".yellow().bold(),
+        "F".yellow().bold(),
+        "G".yellow().bold()
     );
 }
 
-fn try_parse_player_input(player_input: String) -> Option<char> {
+fn try_parse_player_input(player_input: String) -> PlayerInput {
     let player_input = player_input.trim().to_lowercase();
     let mut chars = player_input.chars();
-    let first_char = chars.next()?;
+    let Some(first_char) = chars.next() else {
+        return PlayerInput::Invalid
+    };
     // Valid responses only have 1 char
     // If chars has multiple characters, return None
     if chars.next().is_some() {
-        return None
+        return PlayerInput::Invalid
     }
     // Ensure user input is alphabetical character in correct range
     if first_char >= 'a' && first_char < (b'a' + BOARD_WIDTH as u8) as char {
-        Some(first_char)
+        PlayerInput::Column(first_char)
+    } else if first_char == 'q' {
+        PlayerInput::Quit
     } else {
-        None
+        PlayerInput::Invalid
     }
 }
 
@@ -151,40 +159,49 @@ fn main() {
 
         // Show board
         display_board(&board);
-        println!("To Move: {}", if player_1_turn { "Player 1".to_string().red().bold() } else { "Player 2".to_string().yellow().bold() });
+        println!("Controls: {} Drop Piece | {} Quit\n", "[A-G]".blue(), "[Q]".blue());
+        println!("Current Turn: {}", if player_1_turn { "Player 1".to_string().red().bold() } else { "Player 2".to_string().yellow().bold() });
         // User input loop
         loop {
-            print!("Enter a column to place your piece ('Q' to exit): ");
+            print!("Enter your move: ");
             // Flush buffer to show above print statement
             io::stdout().flush().expect("Failed to flush stdout");
             let mut player_input = String::new();
             io::stdin()
                 .read_line(&mut player_input)
                 .expect("Failed to read user input");
-            if let Some(c) = try_parse_player_input(player_input) {
-                let column_index = (c as u8) - ('a' as u8);
-                if let Err(e) = add_piece_to_column(&mut board, column_index as usize, player_1_turn) {
-                    println!("{}", e);
-                    continue; // Ask for input again
+            match try_parse_player_input(player_input) {
+                PlayerInput::Column(c) => {
+                    let column_index = (c as u8) - ('a' as u8);
+                    if let Err(e) = add_piece_to_column(&mut board, column_index as usize, player_1_turn) {
+                        println!("{}", e);
+                        continue; // Ask for input again
+                    }
+                    break;
                 }
-                break;
-            } else {
-                continue;
+                PlayerInput::Quit => {
+                    println!("{}", "Exiting game".yellow());
+                    return;
+                }
+                PlayerInput::Invalid => {
+                    println!("{} Enter a letter from {} to {} or {} to Quit", "Invalid Input!".red().bold(), "A".yellow().bold(), "G".yellow().bold(), "Q".yellow().bold());
+                    continue;
+                } 
             }
         }
         move_number += 1;
         // Check for winner
-        println!("Checking for winner");
         if let Some(winner) = check_for_winner(&board, &move_number) {
             // Clear terminal
             print!("\x1B[2J\x1B[1;1H");
             // Draw final board
             display_board(&board);
 
+            println!("{}", "GAME OVER".green().bold());
             if winner == Player::One {
-                println!("{} won!", "Player 1".red().bold());
+                println!("{} won! 🎉", "Player 1".red().bold());
             } else if winner == Player::Two {
-                println!("{} won!", "Player 2".yellow().bold());
+                println!("{} won! 🎉", "Player 2".yellow().bold());
             } else {
                 println!("It was a draw!");
             }
