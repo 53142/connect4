@@ -1,4 +1,5 @@
-use std::{error::Error, io};
+use colored::Colorize;
+use std::{error::Error, io::{self, Write}};
 
 const BOARD_WIDTH: usize = 7;
 const BOARD_HEIGHT: usize = 6;
@@ -15,23 +16,39 @@ enum Player {
 }
 
 
-fn display_board(board: &Board) -> String {
-    let mut result = String::new();
-    
-    for row in board {
+fn display_board(board: &Board) {
+    // Assuming board is iterable (like a 2D array or Vec)
+    for board_row in board { 
         // Display each cell in row
-        for (j, cell) in row.iter().enumerate() {
-            result.push_str(&cell.to_string());
-            // Don't add pipe after last cell
-            if j < BOARD_WIDTH - 1 {
-                result.push('|');
+        let mut display_row = String::new();
+        
+        for (j, cell) in board_row.iter().enumerate() {
+            display_row.push_str(&"|".blue().to_string());
+            if cell == &0 {
+                display_row.push_str(&"o".black().to_string());
+            } else if cell == &1 {
+                display_row.push_str(&"●".red().to_string());
+            } else {
+                display_row.push_str(&"●".yellow().to_string());
             }
         }
-        result.push('\n');
+        // Add final pipe
+        display_row.push_str(&"|".blue().to_string());
+        println!("{}{}", " ".repeat((40-15)/2), display_row);
     }
+    
     // Add letters at bottom
-    result.push_str("A|B|C|D|E|F|G\n");
-    result
+    println!(
+        "{}{} {} {} {} {} {} {}\n",
+        " ".repeat((40-13)/2),
+        "A".yellow(), 
+        "B".yellow(), 
+        "C".yellow(), 
+        "D".yellow(), 
+        "E".yellow(), 
+        "F".yellow(), 
+        "G".yellow()
+    );
 }
 
 fn try_parse_player_input(player_input: String) -> Option<char> {
@@ -126,15 +143,24 @@ fn main() {
 
     // Start gameplay loop
     loop {
-        println!("{}", display_board(&board));
-        println!("Player to move: {}", if player_1_turn {1} else {2});
+        // Clear terminal
+        print!("\x1B[2J\x1B[1;1H");
+
+        // Fancy Title
+        println!("{:^40}", "Connect 4".magenta().bold().underline());
+
+        // Show board
+        display_board(&board);
+        println!("To Move: {}", if player_1_turn { "Player 1".to_string().red().bold() } else { "Player 2".to_string().yellow().bold() });
         // User input loop
         loop {
-            println!("Enter your move as a letter: ");
+            print!("Enter a column to place your piece ('Q' to exit): ");
+            // Flush buffer to show above print statement
+            io::stdout().flush().expect("Failed to flush stdout");
             let mut player_input = String::new();
             io::stdin()
-            .read_line(&mut player_input)
-            .expect("Failed to read user input");
+                .read_line(&mut player_input)
+                .expect("Failed to read user input");
             if let Some(c) = try_parse_player_input(player_input) {
                 let column_index = (c as u8) - ('a' as u8);
                 if let Err(e) = add_piece_to_column(&mut board, column_index as usize, player_1_turn) {
@@ -150,13 +176,15 @@ fn main() {
         // Check for winner
         println!("Checking for winner");
         if let Some(winner) = check_for_winner(&board, &move_number) {
+            // Clear terminal
+            print!("\x1B[2J\x1B[1;1H");
             // Draw final board
-            println!("{}", display_board(&board));
+            display_board(&board);
 
             if winner == Player::One {
-                println!("Player 1 won!");
+                println!("{} won!", "Player 1".red().bold());
             } else if winner == Player::Two {
-                println!("Player 2 won!");
+                println!("{} won!", "Player 2".yellow().bold());
             } else {
                 println!("It was a draw!");
             }
