@@ -1,16 +1,16 @@
 mod minimax;
 
 use colored::Colorize;
-use std::{error::Error, io::{self, Write}};
+use std::{io::{self, Write}};
 
 use crate::minimax::MiniMaxAI;
 
-const BOARD_COLS: usize = 7;
+pub const BOARD_COLS: usize = 7;
 const BOARD_ROWS: usize = 6;
 
-#[derive(PartialEq, Copy, Clone)]
+#[derive(PartialEq, Eq, Hash, Copy, Clone)]
 #[repr(u8)]
-enum Player {
+pub enum Player {
     None = 0,
     One = 1,
     Two = 2,
@@ -18,6 +18,7 @@ enum Player {
 
 // Board setup
 // Stores board setup and logic for interacting with it
+#[derive(PartialEq, Eq, Hash, Clone)]
 pub struct Board {
     grid: [[Player; BOARD_COLS]; BOARD_ROWS],
     col_heights: [usize; BOARD_COLS],
@@ -36,15 +37,66 @@ impl Board {
         col_index < BOARD_COLS && self.col_heights[col_index] < BOARD_ROWS
     }
 
-    pub fn move_piece(&mut self, col_index: usize, player: Player) -> Option<()> {
+pub fn move_piece(&mut self, col_index: usize, player: Player) -> Option<usize> {
         // Ensure valid movement
         if player != Player::None && self.is_valid_move(col_index) {
+            let row_index = BOARD_ROWS - self.col_heights[col_index] - 1;
             // Move piece
-            self.grid[BOARD_ROWS - self.col_heights[col_index] - 1][col_index] = player;
+            self.grid[row_index][col_index] = player;
 
             // Increment column height
             self.col_heights[col_index] += 1;
-            return Some(());
+            return Some(row_index);
+        }
+        None
+    }
+
+    // Used to check for win at a specific position so we don't have to scan the whole board
+    pub fn check_win_at(&self, row: usize, col: usize) -> Option<Player> {
+        let player = self.grid[row][col];
+        if player == Player::None {
+            return None;
+        }
+
+        let directions = [
+            (0, 1),   // horizontal
+            (1, 0),   // vertical
+            (1, 1),   // diagonal down-right
+            (1, -1),  // diagonal down-left
+        ];
+
+        for (r_dir, c_dir) in directions {
+            let mut count = 1;
+            
+            // Check positive direction
+            let mut r = row as isize + r_dir;
+            let mut c = col as isize + c_dir;
+            while r >= 0 && r < BOARD_ROWS as isize && c >= 0 && c < BOARD_COLS as isize {
+                if self.grid[r as usize][c as usize] == player {
+                    count += 1;
+                    r += r_dir;
+                    c += c_dir;
+                } else {
+                    break;
+                }
+            }
+
+            // Check negative direction
+            let mut r = row as isize - r_dir;
+            let mut c = col as isize - c_dir;
+            while r >= 0 && r < BOARD_ROWS as isize && c >= 0 && c < BOARD_COLS as isize {
+                if self.grid[r as usize][c as usize] == player {
+                    count += 1;
+                    r -= r_dir;
+                    c -= c_dir;
+                } else {
+                    break;
+                }
+            }
+
+            if count >= 4 {
+                return Some(player);
+            }
         }
         None
     }
@@ -165,13 +217,6 @@ impl Board {
         
         let mut score = 0;
 
-        // Obviously getting 4 in row is best
-        if player_1_cells == 4 {
-            score += 1_000_000;
-        }
-        if player_2_cells == 4 {
-            score -= 1_000_000;
-        }
         // Favor combinations close to 4 in row
         if player_1_cells == 3 && empty_cells == 1 {
             score += 1_000;
@@ -197,7 +242,7 @@ impl Board {
     }
 
     // Return all valid columns to place a piece in
-    fn get_valid_moves(&self) -> Vec<usize> {
+    pub fn get_valid_moves(&self) -> Vec<usize> {
         (0..BOARD_COLS).filter(|&c| self.is_valid_move(c)).collect()
     }
 
@@ -276,9 +321,9 @@ fn main() {
     let mut board = Board::new();
 
     let mut playing_computer = false;
-    let computer_turn_1 = false;
+    let mut computer_turn_1 = false;
 
-    let minimax = MiniMaxAI;
+    let mut minimax = MiniMaxAI::new();
 
     // Clear terminal
     print!("\x1B[2J\x1B[1;1H");
@@ -286,8 +331,7 @@ fn main() {
     // Fancy Title
     println!("{:^40}", "Connect 4".magenta().bold().underline());
 
-    println!("[1] Play Against Computer");
-    println!("[2] Play Against Person");
+    println!("Type a number\n[1] Play Against Computer\n[2] Play Against Person");
     loop {
         let mut player_input = String::new();
         io::stdin()
@@ -302,6 +346,29 @@ fn main() {
             }
         }
         continue;
+    }
+
+    // Clear terminal
+    print!("\x1B[2J\x1B[1;1H");
+
+    if playing_computer {
+        println!("Which player do you want to be?\n[1] Player One (You start)\n[2] Player 2 (The computer starts)");
+        loop {
+            let mut player_input = String::new();
+            io::stdin()
+                .read_line(&mut player_input)
+                .expect("Failed to read user input");
+            if let Ok(num) = player_input.trim().parse::<i32>() {
+                if num == 1 {
+                    computer_turn_1 = false;
+                    break;
+                } else if num == 2 {
+                    computer_turn_1 = true;
+                    break;
+                }
+            }
+            continue;
+        }
     }
 
 
@@ -321,7 +388,7 @@ fn main() {
         loop {
             if playing_computer && computer_turn_1 == player_1_turn { // If playing computer & computer turn
                 let player = if player_1_turn { &Player::One} else { &Player::Two };
-                let (_, col_index) = minimax.minimax(&mut board, 5, &player);
+                let (_, col_index) = minimax.minimax(&mut board, 15, &player);
                 board.move_piece(col_index.unwrap(), *player);
                 break;
             } else {
