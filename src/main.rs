@@ -8,6 +8,14 @@ use crate::minimax::MiniMaxAI;
 pub const BOARD_COLS: usize = 7;
 const BOARD_ROWS: usize = 6;
 
+#[derive(Copy, Clone)]
+#[repr(u128)]
+enum GameDifficulty {
+    Easy = 5,
+    Medium = 100,
+    Hard = 250,
+}
+
 #[derive(PartialEq, Eq, Hash, Copy, Clone)]
 #[repr(u8)]
 pub enum Player {
@@ -37,7 +45,7 @@ impl Board {
         col_index < BOARD_COLS && self.col_heights[col_index] < BOARD_ROWS
     }
 
-pub fn move_piece(&mut self, col_index: usize, player: Player) -> Option<usize> {
+    pub fn move_piece(&mut self, col_index: usize, player: Player) -> Option<usize> {
         // Ensure valid movement
         if player != Player::None && self.is_valid_move(col_index) {
             let row_index = BOARD_ROWS - self.col_heights[col_index] - 1;
@@ -322,6 +330,7 @@ fn main() {
 
     let mut playing_computer = false;
     let mut computer_turn_1 = false;
+    let mut game_difficulty = GameDifficulty::Easy;
 
     let mut minimax = MiniMaxAI::new();
 
@@ -331,13 +340,18 @@ fn main() {
     // Fancy Title
     println!("{:^40}", "Connect 4".magenta().bold().underline());
 
-    println!("Type a number\n[1] Play Against Computer\n[2] Play Against Person");
+    println!("{}\n{} Play Against Computer\n{} Play Against Person", "Who do you want to play?".underline().bold(), "[1]".red().bold(), "[2]".yellow().bold());
     loop {
         let mut player_input = String::new();
         io::stdin()
             .read_line(&mut player_input)
             .expect("Failed to read user input");
-        if let Ok(num) = player_input.trim().parse::<i32>() {
+        player_input = player_input.trim().to_lowercase().to_string();
+        if player_input == "q" {
+            println!("{}", "Exiting game".yellow());
+            return;
+        }
+        if let Ok(num) = player_input.parse::<i32>() {
             if num == 1 {
                 playing_computer = true;
                 break;
@@ -352,13 +366,20 @@ fn main() {
     print!("\x1B[2J\x1B[1;1H");
 
     if playing_computer {
-        println!("Which player do you want to be?\n[1] Player One (You start)\n[2] Player 2 (The computer starts)");
+        // Fancy Title
+        println!("{:^40}", "Connect 4".magenta().bold().underline());
+        println!("{}\n{} Player 1 (You start)\n{} Player 2 (Computer starts)", "Which player do you want to be?".underline().bold(), "[1]".red().bold(), "[2]".yellow().bold());
         loop {
             let mut player_input = String::new();
             io::stdin()
                 .read_line(&mut player_input)
                 .expect("Failed to read user input");
-            if let Ok(num) = player_input.trim().parse::<i32>() {
+            player_input = player_input.trim().to_lowercase().to_string();
+            if player_input == "q" {
+                println!("{}", "Exiting game".yellow());
+                return;
+            }
+            if let Ok(num) = player_input.parse::<i32>() {
                 if num == 1 {
                     computer_turn_1 = false;
                     break;
@@ -369,8 +390,40 @@ fn main() {
             }
             continue;
         }
-    }
 
+        // Clear terminal
+        print!("\x1B[2J\x1B[1;1H");
+
+        // Difficulty Prompt
+
+        // Fancy Title
+        println!("{:^40}", "Connect 4".magenta().bold().underline());
+        println!("{}\n{} Easy\n{} Medium\n{} Hard", "Which difficulty do you want?".underline().bold(), "[1]".green().bold(), "[2]".yellow().bold(), "[3]".red().bold());
+        loop {
+            let mut player_input = String::new();
+            io::stdin()
+                .read_line(&mut player_input)
+                .expect("Failed to read user input");
+            player_input = player_input.trim().to_lowercase().to_string();
+            if player_input == "q" {
+                println!("{}", "Exiting game".yellow());
+                return;
+            }
+            if let Ok(num) = player_input.parse::<i32>() {
+                if num == 1 {
+                    game_difficulty = GameDifficulty::Easy;
+                    break;
+                } else if num == 2 {
+                    game_difficulty = GameDifficulty::Medium;
+                    break;
+                } else if num == 3 {
+                    game_difficulty = GameDifficulty::Hard;
+                    break;
+                }
+            }
+            continue;
+        }
+    }
 
     // Start gameplay loop
     loop {
@@ -388,8 +441,8 @@ fn main() {
         loop {
             if playing_computer && computer_turn_1 == player_1_turn { // If playing computer & computer turn
                 let player = if player_1_turn { &Player::One} else { &Player::Two };
-                let (_, col_index) = minimax.minimax(&mut board, 15, &player);
-                board.move_piece(col_index.unwrap(), *player);
+                let (_, col_index) = minimax.minimax(&mut board, game_difficulty as u128, &player);
+                board.move_piece(col_index.expect("Unable to find best move?"), *player);
                 break;
             } else {
                 print!("Enter your move: ");
@@ -426,13 +479,24 @@ fn main() {
             // Draw final board
             println!("{}", board.print_board());
 
-            println!("{}", "GAME OVER".green().bold());
-            if winner == Player::One {
-                println!("{} won! 🎉", "Player 1".red().bold());
-            } else if winner == Player::Two {
-                println!("{} won! 🎉", "Player 2".yellow().bold());
+            println!("{}", "GAME OVER".green().bold().underline());
+            if playing_computer {
+                // If winner is computer give message that user lost
+                if winner == if computer_turn_1 { Player::One } else { Player::Two } {
+                    println!("{}", "You lost!".red().bold());
+                } else if winner == Player::None {
+                    println!("{}", "You drew against the computer! 🎉".yellow().bold());
+                } else {
+                    println!("{}", "You beat the computer! 🎉".red().bold());
+                }                
             } else {
-                println!("It was a draw!");
+                if winner == Player::One {
+                    println!("{} won! 🎉", "Player 1".red().bold());
+                } else if winner == Player::Two {
+                    println!("{} won! 🎉", "Player 2".yellow().bold());
+                } else {
+                    println!("It was a draw!");
+                }
             }
             break;
         }

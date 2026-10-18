@@ -1,5 +1,5 @@
 use crate::{Board, Player, BOARD_COLS};
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Instant};
 
 #[derive(Copy, Clone, PartialEq)]
 enum NodeType {
@@ -28,14 +28,16 @@ impl MiniMaxAI {
 
   // Minimax function
   // Returns best evaluation and best move
-  pub fn minimax(&mut self, board: &mut Board, target_depth: usize, maximizing_player: &Player) -> (i32, Option<usize>) {
+  pub fn minimax(&mut self, board: &mut Board, target_time_ms: u128, maximizing_player: &Player) -> (i32, Option<usize>) {
+    let start_time = Instant::now();
     self.table.clear();
     let mut best_eval = 0;
     let mut best_move = None;
 
     // Iterative deepening: starts at low depth and slowly work down to target depth, reusing saved evaluations if possible
-    for current_depth in 1..=target_depth {
-      println!("current depth: {}", current_depth);
+    let mut current_depth = 1;
+    while start_time.elapsed().as_millis() < target_time_ms {
+      // println!("current depth: {}", current_depth);
       let (eval, col) = self.minimax_ply(board, current_depth, 0, i32::MIN, i32::MAX, maximizing_player);
       best_eval = eval;
       if col.is_some() {
@@ -45,6 +47,7 @@ impl MiniMaxAI {
       if eval.abs() > 900_000 {
         break;
       }
+      current_depth += 1;
     }
 
     (best_eval, best_move)
@@ -75,14 +78,16 @@ impl MiniMaxAI {
       }
     }
 
+    let mut valid_moves = board.get_valid_moves();
+
+    // If draw, eval is 0
+    if valid_moves.is_empty() {
+      return (0, None);
+    }
+
     // If reached end, just use current eval
     if depth == 0 {
       return (board.evaluate(), None)
-    }
-
-    let mut valid_moves = board.get_valid_moves();
-    if valid_moves.is_empty() {
-      return (board.evaluate(), None);
     }
 
     // Prioritize best move from previous depth search
@@ -100,19 +105,20 @@ impl MiniMaxAI {
     let mut best_eval = if is_player_one { i32::MIN } else { i32::MAX };
 
     for col in valid_moves {
-      let eval;
       // move_piece returns the row where the piece landed
-      let placed_row = board.move_piece(col, *maximizing_player).unwrap();
+      let placed_row = board.move_piece(col, *maximizing_player).expect("Unable to move piece on board");
 
-      // Smaller ply means earlier win or later loss so is better
-      if board.check_win_at(placed_row, col) == Some(*maximizing_player) {
-        eval = 1_000_000 - (ply as i32) * 100;
-      } else if board.check_win_at(placed_row, col) == Some(if is_player_one { Player::Two } else { Player::One }) {
-        eval = -1_000_000 + (ply as i32) * 100;
+      let eval = if let Some(winner) = board.check_win_at(placed_row, col) {
+          match winner {
+              Player::One => 1_000_000 - (ply as i32) * 100,
+              Player::Two => -1_000_000 + (ply as i32) * 100,
+              Player::None => 0,
+          }
       } else {
         // Recurse with incremented ply and updated alpha/beta bounds
-        (eval, _) = self.minimax_ply(board, depth - 1, ply + 1, alpha, beta, if is_player_one { &Player::Two } else { &Player::One });
-      }
+        self.minimax_ply(board, depth - 1, ply + 1, alpha, beta, if is_player_one { &Player::Two } else { &Player::One }).0
+      };
+
       board.unmove_piece(col);
 
       if is_player_one {
