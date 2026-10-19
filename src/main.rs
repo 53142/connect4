@@ -8,11 +8,12 @@ use crate::minimax::MiniMaxAI;
 pub const BOARD_COLS: usize = 7;
 const BOARD_ROWS: usize = 6;
 
+// Game difficulty, encoded with time for computer to think for each difficulty
 #[derive(Copy, Clone)]
 #[repr(u128)]
 enum GameDifficulty {
     Easy = 5,
-    Medium = 100,
+    Medium = 85,
     Hard = 250,
 }
 
@@ -24,18 +25,134 @@ pub enum Player {
     Two = 2,
 }
 
+// Bitboard setup
+// 7 bits per Column
+// Bit 6 - unused bc base 2 stuff
+// Bit 5 - 6th cell from bottom
+// Bit 4 - 5th cell from bottom
+// ...
+// Bit 0 - Bottom-most cell
+
+// How much to shift to get to new column
+const STRIDE: usize = BOARD_ROWS + 1;
+
+const WIN_SHIFTS: [u32; 4] = [
+    1, // Shifting 1 bit moves vertically
+    7, // Shifting 7 bits moves horizontally
+    6, // Shifting 6 bits moves diagonal
+    8 // Shifting 8 bits moves diagonal in opposite dir.
+];
+
+// Constant for number of windows based on board dimensions
+const WINDOW_COUNT: usize =
+    BOARD_ROWS * (BOARD_COLS - 3)
+    + (BOARD_ROWS - 3) * BOARD_COLS
+    + 2 * (BOARD_ROWS - 3) * (BOARD_COLS - 3);
+
+// Get bit for cell based on row and col
+const fn cell_bit(row: usize, col: usize) -> u64 {
+    1u64 << (col * STRIDE + (BOARD_ROWS - 1 - row))
+}
+
+// Function to return the window mask for a desired window
+const fn window_mask(
+    row: usize,
+    col: usize,
+    delta_row: isize,
+    delta_col: isize,
+) -> u64 {
+    let mut mask = 0u64;
+    let mut i = 0;
+
+    while i < 4 {
+        let r = (row as isize + i as isize * delta_row) as usize;
+        let c = (col as isize + i as isize * delta_col) as usize;
+
+        // Add to mask
+        mask |= cell_bit(r, c);
+        i += 1;
+    }
+
+    mask
+}
+
+// Generate winning window masks
+const fn build_window_masks() -> [u64; WINDOW_COUNT] {
+    let mut masks = [0u64; WINDOW_COUNT];
+    let mut n = 0;
+
+    // Masks for horizontal windows
+    let mut row = 0;
+    while row < BOARD_ROWS {
+        let mut col = 0;
+        while col + 3 < BOARD_COLS {
+            masks[n] = window_mask(row, col, 0, 1);
+            n += 1;
+            col += 1;
+        }
+        row += 1;
+    }
+
+    // Masks for vertical windows
+    row = 0;
+    while row + 3 < BOARD_ROWS {
+        let mut col = 0;
+        while col < BOARD_COLS {
+            masks[n] = window_mask(row, col, 1, 0);
+            n += 1;
+            col += 1;
+        }
+        row += 1;
+    }
+
+    // Masks for lower diagonal windows
+    row = 0;
+    while row + 3 < BOARD_ROWS {
+        let mut col = 0;
+        while col + 3 < BOARD_COLS {
+            masks[n] = window_mask(row, col, 1, 1);
+            n += 1;
+            col += 1;
+        }
+        row += 1;
+    }
+
+    // Masks for upper diagonal windows
+    row = 3;
+    while row < BOARD_ROWS {
+        let mut col = 0;
+        while col + 3 < BOARD_COLS {
+            masks[n] = window_mask(row, col, -1, 1);
+            n += 1;
+            col += 1;
+        }
+        row += 1;
+    }
+
+    masks
+}
+
+// Generate the window masks at compile time
+static WINDOW_MASKS: [u64; WINDOW_COUNT] = build_window_masks();
+
+// Six cells in center column
+// Add offset to center of board 
+const CENTER_COLUMN_MASK: u64 = ((1u64 << BOARD_ROWS) - 1) << ((BOARD_COLS / 2) * STRIDE);
+
 // Board setup
 // Stores board setup and logic for interacting with it
 #[derive(PartialEq, Eq, Hash, Clone)]
 pub struct Board {
-    grid: [[Player; BOARD_COLS]; BOARD_ROWS],
-    col_heights: [usize; BOARD_COLS],
+    player_one: u64, // Bitboard for storing player one
+    player_two: u64, // Bitboard for storing player 2
+    col_heights: [usize; BOARD_COLS], // heights of columns for easier calculation
 }
 
 impl Board {
     pub fn new() -> Self {
         Board {
-            grid: [[Player::None; BOARD_COLS]; BOARD_ROWS],
+            player_one: 0,
+            player_two: 0,
             col_heights: [0; BOARD_COLS],
         }
     }
@@ -47,122 +164,78 @@ impl Board {
 
     pub fn move_piece(&mut self, col_index: usize, player: Player) -> Option<usize> {
         // Ensure valid movement
-        if player != Player::None && self.is_valid_move(col_index) {
-            let row_index = BOARD_ROWS - self.col_heights[col_index] - 1;
-            // Move piece
-            self.grid[row_index][col_index] = player;
-
-            // Increment column height
-            self.col_heights[col_index] += 1;
-            return Some(row_index);
-        }
-        None
-    }
-
-    // Used to check for win at a specific position so we don't have to scan the whole board
-    pub fn check_win_at(&self, row: usize, col: usize) -> Option<Player> {
-        let player = self.grid[row][col];
-        if player == Player::None {
+        if player == Player::None || !self.is_valid_move(col_index) {
             return None;
         }
 
-        let directions = [
-            (0, 1),   // horizontal
-            (1, 0),   // vertical
-            (1, 1),   // diagonal down-right
-            (1, -1),  // diagonal down-left
-        ];
+        // Bits to shift for height adjustment
+        let height = self.col_heights[col_index] as usize;
+        // Base index for column
+        let base_bit_index = col_index * STRIDE;
 
-        for (r_dir, c_dir) in directions {
-            let mut count = 1;
-            
-            // Check positive direction
-            let mut r = row as isize + r_dir;
-            let mut c = col as isize + c_dir;
-            while r >= 0 && r < BOARD_ROWS as isize && c >= 0 && c < BOARD_COLS as isize {
-                if self.grid[r as usize][c as usize] == player {
-                    count += 1;
-                    r += r_dir;
-                    c += c_dir;
-                } else {
-                    break;
-                }
-            }
+        // Shift to proper bit position
+        let bit: u64 = 1 << (base_bit_index + height);
 
-            // Check negative direction
-            let mut r = row as isize - r_dir;
-            let mut c = col as isize - c_dir;
-            while r >= 0 && r < BOARD_ROWS as isize && c >= 0 && c < BOARD_COLS as isize {
-                if self.grid[r as usize][c as usize] == player {
-                    count += 1;
-                    r -= r_dir;
-                    c -= c_dir;
-                } else {
-                    break;
-                }
-            }
-
-            if count >= 4 {
-                return Some(player);
-            }
+        // Set bit with 'or'
+        match player {
+            Player::One => self.player_one |= bit,
+            Player::Two => self.player_two |= bit,
+            Player::None => return None,
         }
-        None
+
+        self.col_heights[col_index] += 1;
+
+        return Some(BOARD_ROWS - 1 - height)
     }
 
     pub fn unmove_piece(&mut self, col_index: usize) -> Option<()> {
-        if self.col_heights[col_index] > 0 {
-            // Remove piece
-            self.grid[BOARD_ROWS - self.col_heights[col_index]][col_index] = Player::None;
-
-            // Decrement column height
-            self.col_heights[col_index] -= 1;
-            return Some(());
+        if col_index >= BOARD_COLS || self.col_heights[col_index] == 0 {
+            return None;
         }
-        None
+
+        let height = self.col_heights[col_index] - 1;
+        let bit_index = col_index * STRIDE + height;
+        let bit = 1u64 << bit_index;
+
+        if self.player_one & bit != 0 {
+            self.player_one &= !bit;
+        } else if self.player_two & bit != 0 {
+            self.player_two &= !bit;
+        } else {
+            return None;
+        }
+
+        self.col_heights[col_index] -= 1;
+        Some(())
+    }
+
+    // Convert row and col to bit and return the state of that cell.
+    fn cell_at(&self, row: usize, col: usize) -> Player {
+        let bit_index = col * STRIDE + (BOARD_ROWS - 1 - row);
+        let bit = 1u64 << bit_index;
+
+        if self.player_one & bit != 0 {
+            Player::One
+        } else if self.player_two & bit != 0 {
+            Player::Two
+        } else {
+            Player::None
+        }
     }
 
     // Checks board for winner
     // Returns Some(Player) if game is complete with the winner (or Player::None if draw) and None if the game is not over yet
-    pub fn check_for_winner(&self, move_number: &u8) -> Option<Player> {
-        for i in 0..BOARD_ROWS {
-            for j in 0..BOARD_COLS {
-                let cell = self.grid[i][j];
-                if cell == Player::None {
-                    continue;
-                }
-
-                // Possible directions to make a Connect 4 in
-                let directions = [
-                    (0, 1), // horizontal
-                    (1, 0), // vertical
-                    (1, 1), // Upper Diagonal
-                    (-1, 1), // Lower Diagonal
-                ];
-
-                for (row_offset, column_offset) in directions {
-                    let mut num_in_row = 1;
-                    let mut row_index  = i as isize + row_offset;
-                    let mut column_index = j as isize + column_offset;
-                    // Traverse to other cells in each direction to check if 4 in a row
-                    while column_index < BOARD_COLS as isize && column_index >= 0 && row_index < BOARD_ROWS as isize && row_index >= 0 {
-                        let new_cell = self.grid[row_index as usize][column_index as usize];
-                        if new_cell == cell {
-                            num_in_row += 1;
-                        } else {
-                            break;
-                        }
-                        if num_in_row == 4 {
-                            return Some(cell)
-                        }
-                        row_index += row_offset;
-                        column_index += column_offset;
-                    }
-                }
-            }
+    pub fn check_for_winner(&self) -> Option<Player> {
+        if self.has_four(self.player_one) {
+            return Some(Player::One);
         }
 
-        // Draw if no winner and board full
-        if *move_number == BOARD_ROWS as u8 * BOARD_COLS as u8 {
+        if self.has_four(self.player_two) {
+            return Some(Player::Two);
+        }
+
+        // If all columns full, than board is full and game is a draw
+        if self.col_heights.iter().all(|&height| height == BOARD_ROWS) {
             return Some(Player::None);
         }
 
@@ -173,77 +246,34 @@ impl Board {
     // Positive is better for player 1
     // Negative is better for player 2
     pub fn evaluate(&self) -> i32 {
-        let mut score = 0;
-        
-        // Center preference
-       let center_col = BOARD_COLS / 2;
-        for row in 0..BOARD_ROWS {
-            match self.grid[row][center_col] {
-                Player::One => score += 6,
-                Player::Two => score -= 6,
-                Player::None => {}
+        // Center-column preference based on number of pieces in center for each player
+        let player1_center_pieces = (self.player_one & CENTER_COLUMN_MASK).count_ones() as i32;
+        let player2_center_pieces = (self.player_two & CENTER_COLUMN_MASK).count_ones() as i32;
+
+        let mut score = (player1_center_pieces - player2_center_pieces) * 6;
+
+        // Evaluate all 69 four-cell windows using bitmasks
+        for &mask in WINDOW_MASKS.iter() {
+            // Remove bits outside window and count all pieces for player 1
+            let player1_pieces = (self.player_one & mask).count_ones();
+
+            // Remove bits outside window and count all pieces for player 2
+            let player2_pieces = (self.player_two & mask).count_ones();
+
+            // Window with both player's pieces can't be made into a Connect 4 so it doesn't matter
+            if player1_pieces > 0 && player2_pieces > 0 {
+                continue;
             }
-        }
 
-        // Evaluate the 69 scanning windows
-        // Horizontal
-        for row in 0..BOARD_ROWS {
-            for col in 0..(BOARD_COLS - 3) {
-                score += self.evaluate_window([self.grid[row][col], self.grid[row][col+1], self.grid[row][col+2], self.grid[row][col+3]]);
-            }
-        }
-
-        // Vertical
-        for row in 0..(BOARD_ROWS - 3) {
-            for col in 0..BOARD_COLS {
-                score += self.evaluate_window([self.grid[row][col], self.grid[row+1][col], self.grid[row+2][col], self.grid[row+3][col]]);
-            }
-        }
-
-        // Lower Diagonal
-        for row in 3..BOARD_ROWS {
-            for col in 0..BOARD_COLS - 3 {
-                score += self.evaluate_window([self.grid[row][col], self.grid[row-1][col+1], self.grid[row-2][col+2], self.grid[row-3][col+3]]);
-            }
-        }
-
-        // Upper Diagonal
-        for row in 0..BOARD_ROWS - 3 {
-            for col in 0..BOARD_COLS - 3 {
-                score += self.evaluate_window([self.grid[row][col], self.grid[row+1][col+1], self.grid[row+2][col+2], self.grid[row+3][col+3]]);
-            }
-        }
-
-        score
-    }
-
-    // Simple function to evaluate set of 4 cells to determine a score
-    fn evaluate_window(&self, window: [Player; 4]) -> i32 {
-        let empty_cells = window.iter().filter(|&&p| p == Player::None).count();
-        let player_1_cells = window.iter().filter(|&&p| p == Player::One).count();
-        let player_2_cells = window.iter().filter(|&&p| p == Player::Two).count();
-        
-        let mut score = 0;
-
-        // Favor combinations close to 4 in row
-        if player_1_cells == 3 && empty_cells == 1 {
-            score += 1_000;
-        }
-        if player_2_cells == 3 && empty_cells == 1 {
-            score -= 1_000;
-        }
-        if player_1_cells == 2 && empty_cells == 2 {
-            score += 10;
-        }
-        if player_2_cells == 2  && empty_cells == 2 {
-            score -= 10;
-        }
-
-        if player_1_cells == 1 && empty_cells == 3 {
-            score += 2;
-        }
-        if player_2_cells == 1  && empty_cells == 3 {
-            score -= 2;
+            score += match (player1_pieces, player2_pieces) {
+                (3, 0) => 1_000,
+                (0, 3) => -1_000,
+                (2, 0) => 10,
+                (0, 2) => -10,
+                (1, 0) => 2,
+                (0, 1) => -2,
+                _ => 0,
+            };
         }
 
         score
@@ -257,18 +287,16 @@ impl Board {
     // Return a fancy image of the board for rendering in the terminal
     pub fn print_board(&self) -> String {
         let mut board_string = String::new();
-        for board_row in self.grid { 
+        for row in 0..BOARD_ROWS { 
             // Display each cell in row
             let mut display_row = String::new();
             
-            for cell in board_row.iter() {
+            for col in 0..BOARD_COLS {
                 display_row.push_str(&"|".blue().to_string());
-                if cell == &Player::None {
-                    display_row.push_str(&"o".white().to_string());
-                } else if cell == &Player::One {
-                    display_row.push_str(&"●".red().to_string());
-                } else {
-                    display_row.push_str(&"●".yellow().to_string());
+                match self.cell_at(row, col) {
+                    Player::None => display_row.push_str(&"o".white().to_string()),
+                    Player::One => display_row.push_str(&"●".red().to_string()),
+                    Player::Two => display_row.push_str(&"●".yellow().to_string()),
                 }
             }
             // Add final pipe
@@ -290,8 +318,33 @@ impl Board {
         ));
         board_string
     }
+
+    // Detect win given player pieces bits quickly using bitshifts
+    fn has_four(&self, bits: u64) -> bool {
+        // Check all winning bit shift
+        for shift in WIN_SHIFTS {
+            // Find same color pieces that are next to each other
+            let pairs = bits & (bits >> shift);
+
+            // Check if there is another adjacent pair in the same direction aka 4 same color pieces in a row
+            if pairs & (pairs >> (2 * shift)) != 0 {
+                return true;
+            }
+        }
+        false
+    }
+
+    // Check if player won with their bitmasks
+    pub fn has_won(&self, player: Player) -> bool {
+        match player {
+            Player::One => self.has_four(self.player_one),
+            Player::Two => self.has_four(self.player_two),
+            Player::None => false,
+        }
+    }
 }
 
+// Player input types
 enum PlayerInput {
     Column(char),
     Quit,
@@ -304,12 +357,12 @@ fn try_parse_player_input(player_input: String) -> PlayerInput {
     let Some(first_char) = chars.next() else {
         return PlayerInput::Invalid
     };
-    // Valid responses only have 1 char
-    // If chars has multiple characters, return None
+    // Valid inputs only have 1 char
+    // If there are multiple characters in the input, return None bc invalid
     if chars.next().is_some() {
         return PlayerInput::Invalid
     }
-    // Ensure user input is alphabetical character in correct range
+    // Ensure user input is a letter in the range of possible moves
     if first_char >= 'a' && first_char < (b'a' + BOARD_COLS as u8) as char {
         PlayerInput::Column(first_char)
     } else if first_char == 'q' {
@@ -320,8 +373,6 @@ fn try_parse_player_input(player_input: String) -> PlayerInput {
 }
 
 fn main() {
-    let mut move_number: u8 = 0;
-
     // Player 1 starts first
     let mut player_1_turn = true;
 
@@ -368,6 +419,8 @@ fn main() {
     if playing_computer {
         // Fancy Title
         println!("{:^40}", "Connect 4".magenta().bold().underline());
+
+        // Mode selection prompt
         println!("{}\n{} Player 1 (You start)\n{} Player 2 (Computer starts)", "Which player do you want to be?".underline().bold(), "[1]".red().bold(), "[2]".yellow().bold());
         loop {
             let mut player_input = String::new();
@@ -394,10 +447,10 @@ fn main() {
         // Clear terminal
         print!("\x1B[2J\x1B[1;1H");
 
-        // Difficulty Prompt
-
         // Fancy Title
         println!("{:^40}", "Connect 4".magenta().bold().underline());
+
+        // Difficulty prompt
         println!("{}\n{} Easy\n{} Medium\n{} Hard", "Which difficulty do you want?".underline().bold(), "[1]".green().bold(), "[2]".yellow().bold(), "[3]".red().bold());
         loop {
             let mut player_input = String::new();
@@ -412,14 +465,14 @@ fn main() {
             if let Ok(num) = player_input.parse::<i32>() {
                 if num == 1 {
                     game_difficulty = GameDifficulty::Easy;
-                    break;
                 } else if num == 2 {
                     game_difficulty = GameDifficulty::Medium;
-                    break;
                 } else if num == 3 {
                     game_difficulty = GameDifficulty::Hard;
-                    break;
+                } else {
+                    continue;
                 }
+                break;
             }
             continue;
         }
@@ -471,9 +524,9 @@ fn main() {
                 }
             }
         }
-        move_number += 1;
+
         // Check for winner
-        if let Some(winner) = board.check_for_winner(&move_number) {
+        if let Some(winner) = board.check_for_winner() {
             // Clear terminal
             print!("\x1B[2J\x1B[1;1H");
             // Draw final board
@@ -500,7 +553,6 @@ fn main() {
             }
             break;
         }
-
         player_1_turn = !player_1_turn;
     }
 }
